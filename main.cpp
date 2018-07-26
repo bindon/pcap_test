@@ -1,5 +1,64 @@
 #include <pcap.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <arpa/inet.h>
+
+#define ETHERTYPE_IP  0x0800
+#define ETHERTYPE_ARP 0x0806
+
+typedef struct _ethernetHeader {
+  uint8_t destinationMac[6];
+  uint8_t sourceMac[6];
+  uint16_t type;
+} ethernetHeader;
+
+typedef struct _ipHeader {
+#if BYTE_ORDER == LITTLE_ENDIAN
+  uint8_t  headerLength:4, 
+	   version:4;
+#elif BYTE_ORDER == BIG_ENDIAN
+  uint8_t  version:4,
+           headerLength:4; 
+#endif
+  uint8_t  typeOfService;
+  uint16_t totalLength;
+  uint16_t id;
+  uint16_t offset;
+  uint8_t  timeToLive;
+  uint8_t  protocol;
+  uint16_t checksum;
+  uint8_t  sourceIp[6];
+  uint8_t  destinationIp[6];
+} ipHeader;
+
+typedef struct _tcpHeader {
+  uint16_t sourcePort;
+  uint16_t destinationPort;
+  uint32_t seqNumber;
+  uint32_t ackNumber;
+#if BYTE_ORDER == LITTLE_ENDIAN
+  uint8_t  reserved:4, 
+	   offset:4;
+#elif BYTE_ORDER == BIG_ENDIAN
+  uint8_t  offset:4, 
+	   reserved:4;
+#endif
+  uint8_t  flags;
+  uint16_t window;
+  uint16_t checksum;
+  uint16_t urgent;
+} tcpHeader;
+
+void printMacAddress(const char *prefix, u_char *startAddress) {
+  printf("%s[%02x:%02x:%02x:%02x:%02x:%02x]\n", prefix, 
+    startAddress[0], startAddress[1], startAddress[2],
+    startAddress[3], startAddress[4], startAddress[5]);
+}
+
+void printIpAddress(const char *prefix, u_char *startAddress) {
+  printf("%s[%d.%d.%d.%d]\n", prefix, 
+    startAddress[0], startAddress[1], startAddress[2], startAddress[3]);
+}
 
 void usage() {
   printf("syntax: pcap_test <interface>\n");
@@ -16,7 +75,7 @@ int main(int argc, char* argv[]) {
   char errbuf[PCAP_ERRBUF_SIZE];
   pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
   if (handle == NULL) {
-    fprintf(stderr, "couldn't open device %s: %s\n", dev, errbuf);
+    fprintf(stderr, "couldn't open devicnetinet/if_ether.he %s: %s\n", dev, errbuf);
     return -1;
   }
 
@@ -29,38 +88,37 @@ int main(int argc, char* argv[]) {
     printf("%u bytes captured\n", header->caplen);
     printf("\n[Packet Parsing...]\n");
     printf("1. Ethernet Information\n");
-    printf("  - Dest MAC : [%02x:%02x:%02x:%02x:%02x:%02x]\n", 
-      packet[0], packet[1], packet[2], packet[3], packet[4],  packet[5]);
-    printf("  - Src  MAC : [%02x:%02x:%02x:%02x:%02x:%02x]\n", 
-      packet[6], packet[7], packet[8], packet[9], packet[10], packet[11]);
-    short type = (packet[12] << 8) | packet[13];
-    printf("  - Type     : [%04x]\n", type);
+    ethernetHeader *ethernetPacket = (ethernetHeader *)packet;
+    printMacAddress("  - Dest MAC : ", ethernetPacket->destinationMac);
+    printMacAddress("  - Src  MAC : ", ethernetPacket->sourceMac);
+    printf("  - Type     : [%04x]\n",  ethernetPacket->type);
 
-    switch(type) {
-      case 0x0800:
+    ipHeader *ipPacket = NULL;
+    tcpHeader *tcpPacket = NULL;
+
+    switch(ntohs(ethernetPacket->type)) {
+      case ETHERTYPE_IP:
+	ipPacket = (ipHeader *)(packet + sizeof(ethernetHeader));
 	printf("\n2. IP Information\n");
-	printf("  - Version       : [IPv%d]\n", (packet[14] >> 4));
-	printf("  - Header Length : [%d]\n", ((packet[14] & 0xF) << 2));
-	printf("  - Time to Live  : [%d]\n", packet[22]);
-	printf("  - Protocol      : [%x]\n", packet[23]);
-	printf("  - Src  IP Addr  : [%d.%d.%d.%d]\n", 
-          packet[26], packet[27], packet[28], packet[29]);
-	printf("  - Dest IP Addr  : [%d.%d.%d.%d]\n", 
-          packet[30], packet[31], packet[32], packet[33]);
-	switch(packet[23]) {
-	  case 0x06:
+	printf("  - Version       : [IPv%d]\n", ipPacket->version);
+	printf("  - Header Length : [%d]\n", ipPacket->headerLength << 2);
+	printf("  - Time to Live  : [%d]\n", ipPacket->timeToLive);
+	printf("  - Protocol      : [%x]\n", ipPacket->protocol);
+	printIpAddress("  - Src  IP Addr  : ", ipPacket->sourceIp);
+	printIpAddress("  - Dest IP Addr  : ", ipPacket->destinationIp);
+	switch(ipPacket->protocol) {
+	  case IPPROTO_TCP:
             printf("\n3. TCP Information\n");
-	    printf("  - Src  Port : [%d]\n", ((packet[34] << 8) | packet[35]));
-	    printf("  - Dest Port : [%d]\n", ((packet[36] << 8) | packet[37]));
+            tcpPacket = (tcpHeader *)(packet + sizeof(ethernetHeader) + (ipPacket->headerLength << 2));
+	    printf("  - Src  Port : [%d]\n", ntohs(tcpPacket->sourcePort));
+	    printf("  - Dest Port : [%d]\n", ntohs(tcpPacket->destinationPort));
 	    break;
-          case 0x11:
-            printf("\n3. UDP Information\n");
-	    printf("  - Src  Port : [%d]\n", ((packet[34] << 8) | packet[35]));
-	    printf("  - Dest Port : [%d]\n", ((packet[36] << 8) | packet[37]));
+          case IPPROTO_UDP:
+            printf("UDP Packet is not Supported!\n");
 	    break;
 	}
 	break;
-      case 0x0806:
+      case ETHERTYPE_ARP:
 	printf("ARP Packet is not Supported!\n");
 	break;
       default:
